@@ -70,6 +70,17 @@ jobs:
             echo "FILE_TYPE=file" >> $GITHUB_ENV
           fi
 
+      - name: Check database connection
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "ERROR: DATABASE_URL secret is empty or not set"
+            echo "Go to repo Settings > Secrets and variables > Actions"
+            echo "Make sure the secret is named exactly DATABASE_URL"
+            exit 1
+          else
+            echo "DATABASE_URL is set (length: ${#DATABASE_URL} chars)"
+          fi
+          
       - name: Run ingest
         run: |
           ARGS="--${{ env.FILE_TYPE }} ${{ env.FILE_PATH }}"
