@@ -1,5 +1,5 @@
 name: Ingest AMI Data
-
+ 
 on:
   workflow_dispatch:
     inputs:
