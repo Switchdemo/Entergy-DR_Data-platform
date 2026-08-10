@@ -3,12 +3,12 @@ name: Ingest AMI Data
 on:
   workflow_dispatch:
     inputs:
-      file_url:
-        description: 'Direct download URL for the CSV or ZIP file'
-        required: false
-        type: string
       release_tag:
         description: 'Release tag to download data from (e.g., v0.1-data)'
+        required: false
+        type: string
+      file_url:
+        description: 'Direct download URL for the CSV or ZIP file'
         required: false
         type: string
       dry_run:
@@ -21,6 +21,8 @@ jobs:
   ingest:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
     steps:
       - name: Checkout repo
@@ -56,37 +58,27 @@ jobs:
         if: ${{ inputs.file_url != '' && inputs.release_tag == '' }}
         run: |
           mkdir -p data/incoming
-          echo "Downloading from: ${{ inputs.file_url }}"
           curl -L -o data/incoming/download "${{ inputs.file_url }}"
-          FILE_TYPE=$(file --mime-type -b data/incoming/download)
-          echo "Detected type: $FILE_TYPE"
-          if [[ "$FILE_TYPE" == *"zip"* ]]; then
+          FILE_TYPE_MIME=$(file --mime-type -b data/incoming/download)
+          if [[ "$FILE_TYPE_MIME" == *"zip"* ]]; then
             mv data/incoming/download data/incoming/meterdata.zip
             echo "FILE_PATH=data/incoming/meterdata.zip" >> $GITHUB_ENV
             echo "FILE_TYPE=zip" >> $GITHUB_ENV
-          elif [[ "$FILE_TYPE" == *"csv"* || "$FILE_TYPE" == *"text"* ]]; then
+          else
             mv data/incoming/download data/incoming/meterdata.csv
             echo "FILE_PATH=data/incoming/meterdata.csv" >> $GITHUB_ENV
             echo "FILE_TYPE=file" >> $GITHUB_ENV
-          else
-            echo "Unknown file type: $FILE_TYPE"
-            exit 1
           fi
 
-      - name: Run ingest (live)
-        if: ${{ inputs.dry_run == false }}
-        env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      - name: Run ingest
         run: |
-          python scripts/ingest_ami.py --${{ env.FILE_TYPE }} "${{ env.FILE_PATH }}"
-
-      - name: Run ingest (dry run)
-        if: ${{ inputs.dry_run == true }}
-        run: |
-          python scripts/ingest_ami.py --${{ env.FILE_TYPE }} "${{ env.FILE_PATH }}" --dry-run
+          ARGS="--${{ env.FILE_TYPE }} ${{ env.FILE_PATH }}"
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          echo "Running: python scripts/ingest_ami.py $ARGS"
+          python scripts/ingest_ami.py $ARGS
 
       - name: Clean up data files
         if: always()
-        run: |
-          rm -rf data/incoming/*
-          echo "Cleaned up incoming data files"
+        run: rm -rf data/incoming/*
