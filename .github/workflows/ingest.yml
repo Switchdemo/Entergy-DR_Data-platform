@@ -1,1 +1,59 @@
+name: Ingest AMI Data
 
+on:
+  workflow_dispatch:
+    inputs:
+      file_url:
+        description: 'Direct download URL for the CSV or ZIP file'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (validate only, no DB writes)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Download data file
+        if: ${{ inputs.file_url != '' }}
+        run: |
+          mkdir -p data/incoming
+          echo "Downloading from: ${{ inputs.file_url }}"
+          curl -L -o data/incoming/download "${{ inputs.file_url }}"
+          FILE_TYPE=$(file --mime-type -b data/incoming/download)
+          echo "Detected type: $FILE_TYPE"
+          if [[ "$FILE_TYPE" == *"zip"* ]]; then
+            mv data/incoming/download data/incoming/meterdata.zip
+            echo "FILE_PATH=data/incoming/meterdata.zip" >> $GITHUB_ENV
+            echo "FILE_TYPE=zip" >> $GITHUB_ENV
+          elif [[ "$FILE_TYPE" == *"csv"* || "$FILE_TYPE" == *"text"* ]]; then
+            mv data/incoming/download data/incoming/meterdata.csv
+            echo "FILE_PATH=data/incoming/meterdata.csv" >> $GITHUB_ENV
+            echo "FILE_TYPE=file" >> $GITHUB_ENV
+          else
+            echo "Unknown file type: $FILE_TYPE"
+            exit 1
+          fi
+
+      - name: Run ingest (live)
+        if: ${{ inputs.dry_run == false }}
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          python
