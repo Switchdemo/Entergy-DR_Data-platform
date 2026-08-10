@@ -7,6 +7,10 @@ on:
         description: 'Direct download URL for the CSV or ZIP file'
         required: false
         type: string
+      release_tag:
+        description: 'Release tag to download data from (e.g., v0.1-data)'
+        required: false
+        type: string
       dry_run:
         description: 'Dry run (validate only, no DB writes)'
         required: false
@@ -30,8 +34,26 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Download data file
-        if: ${{ inputs.file_url != '' }}
+      - name: Download from release
+        if: ${{ inputs.release_tag != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p data/incoming
+          echo "Downloading from release: ${{ inputs.release_tag }}"
+          gh release download "${{ inputs.release_tag }}" --dir data/incoming --repo ${{ github.repository }}
+          ls -la data/incoming/
+          if ls data/incoming/*.zip 1>/dev/null 2>&1; then
+            ZIP_FILE=$(ls data/incoming/*.zip | head -1)
+            echo "FILE_PATH=$ZIP_FILE" >> $GITHUB_ENV
+            echo "FILE_TYPE=zip" >> $GITHUB_ENV
+          elif ls data/incoming/*.csv 1>/dev/null 2>&1; then
+            echo "FILE_PATH=data/incoming/" >> $GITHUB_ENV
+            echo "FILE_TYPE=dir" >> $GITHUB_ENV
+          fi
+
+      - name: Download from URL
+        if: ${{ inputs.file_url != '' && inputs.release_tag == '' }}
         run: |
           mkdir -p data/incoming
           echo "Downloading from: ${{ inputs.file_url }}"
@@ -56,4 +78,15 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
-          python
+          python scripts/ingest_ami.py --${{ env.FILE_TYPE }} "${{ env.FILE_PATH }}"
+
+      - name: Run ingest (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          python scripts/ingest_ami.py --${{ env.FILE_TYPE }} "${{ env.FILE_PATH }}" --dry-run
+
+      - name: Clean up data files
+        if: always()
+        run: |
+          rm -rf data/incoming/*
+          echo "Cleaned up incoming data files"
