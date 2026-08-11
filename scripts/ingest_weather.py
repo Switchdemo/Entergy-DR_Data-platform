@@ -112,7 +112,16 @@ def upsert_observations(conn, observations):
             heat_index_f = EXCLUDED.heat_index_f,
             wind_speed_mph = EXCLUDED.wind_speed_mph
     """
-
+# Deduplicate by station_id + observation_hour
+    seen = set()
+    deduped = []
+    for obs in observations:
+        key = (obs['station_id'], obs['observation_hour'])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(obs)
+    observations = deduped
+    
     rows = [(
         obs['station_id'],
         obs['observation_hour'],
