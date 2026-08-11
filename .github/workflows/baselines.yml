@@ -1,1 +1,62 @@
+name: Compute Baselines
 
+on:
+  workflow_dispatch:
+    inputs:
+      event_id:
+        description: 'Event UUID (find in Supabase: SELECT id, event_name, event_date FROM dr_events)'
+        required: false
+        type: string
+      all_events:
+        description: 'Compute for all events'
+        required: false
+        type: boolean
+        default: false
+      methodology:
+        description: 'Methodology name (leave blank for default)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (show calculations without saving)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  compute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Compute baselines
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.event_id }}" ]; then
+            ARGS="--event-id ${{ inputs.event_id }}"
+          elif [ "${{ inputs.all_events }}" = "true" ]; then
+            ARGS="--all-events"
+          else
+            echo "ERROR: Specify an event_id or check all_events"
+            exit 1
+          fi
+          if [ -n "${{ inputs.methodology }}" ]; then
+            ARGS="$ARGS --methodology \"${{ inputs.methodology }}\""
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          echo "Running: python scripts/baseline_engine.py $ARGS"
+          eval python scripts/baseline_engine.py $ARGS
