@@ -1,0 +1,10 @@
+/*
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=()
+  # Content-Security-Policy: scoped so the app can only talk to Supabase + self.
+  # 'unsafe-inline' is required because a static export inlines a small hydration
+  # bootstrap without a per-request nonce. If you tighten this, test hydration.
+  # Replace the supabase host below if you point at a different project.
+  Content-Security-Policy: default-src 'self'; connect-src 'self' https://usqkhuggvnboggvgkziv.supabase.co wss://usqkhuggvnboggvgkziv.supabase.co; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'

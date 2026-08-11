@@ -1,117 +1,151 @@
 # DR Data Platform
 
-A standalone data management and viewing platform for demand response programs. Ingests AMI interval meter data, computes configurable baselines (10-of-10, high-X-of-Y, etc.), and provides customer-facing data viewing and export.
+Customer-facing viewer for the Entergy Demand Response data platform. Next.js 15
+(App Router) exported as a static site, talking directly to Supabase. Auth and
+data access are both client-side; **Row Level Security is the security boundary**.
 
-## Architecture
+## What's here
 
-- **Database:** Supabase (PostgreSQL) with Row-Level Security for multi-tenant customer access
-- **Ingest pipeline:** Python scripts for AMI CSV processing (raw → curated → hourly rollups)
-- **Baseline engine:** Pluggable, configuration-driven methodology framework
-- **Frontend:** Next.js + Supabase JS SDK *(coming soon)*
+- **Auth** — email/password via Supabase, admin vs customer roles, client-side
+  route guard on everything under `/dashboard`.
+- **Load viewer** (`/dashboard`) — site/meter selector, daily peak-demand bar
+  chart with weekend/holiday differentiation, click-through to hourly profile,
+  weather overlay (temp, heat index, humidity, dew point, wind), CSV export.
+- **Baseline viewer** (`/dashboard/baselines`) — per-event list with reduction
+  metrics, drill-down to a baseline-vs-actual curve with the reduction area
+  shaded and called event hours highlighted, per-event CSV export.
 
-## Quick Start
+## Architecture decisions
 
-### Prerequisites
+**Static export, not SSR.** Every route renders to plain HTML/JS at build time
+(`output: "export"` → `out/`). There's no server: the browser holds the Supabase
+session and every request carries the user's JWT, so RLS filters results
+automatically. This is the simplest, most robust fit for Cloudflare Pages — no
+`next-on-pages` adapter, no edge runtime, nothing to babysit at request time.
 
-- Python 3.10+
-- A Supabase project ([create one here](https://supabase.com/dashboard))
+**The anon key is public by design.** It's a JWT with the `anon` role and is
+safe to ship in the client bundle. RLS is what actually protects data. Never put
+the `service_role` key in this project.
 
-### 1. Install Python dependencies
+**Client-side auth guard is UX, not security.** The guard in
+`src/app/dashboard/layout.tsx` decides what to *render*; it does not protect
+data. A determined user can read the bundle, but RLS still stops them from
+reading rows they aren't entitled to. Keep your RLS policies airtight.
+
+## Two things you must confirm against your database
+
+Everything else is wired to your existing RPCs
+(`get_sites_overview`, `get_daily_summary`, `get_hourly_profile`,
+`get_weather_hourly`, `get_holidays`). Two pieces are assumptions:
+
+### 1. Where the role lives (`src/lib/auth.tsx` → `resolveRole`)
+
+Resolved in priority order: JWT `app_metadata.role` → JWT `user_metadata.role`
+→ a `profiles` table (`profiles.id = auth.uid()`, column `role`). Defaults to
+`customer` (least privilege) if none match. Edit that one function to match how
+you provisioned roles. `app_metadata` is the most robust because your RLS
+policies can read it directly.
+
+### 2. The baseline RPC (`src/lib/rpc.ts` → `getBaselineResults`)
+
+The viewer expects:
+
+```
+get_baseline_results(p_meter_number text, p_start_date date, p_end_date date)
+```
+
+returning one row per (event, hour):
+
+| column          | type   | notes                                   |
+|-----------------|--------|-----------------------------------------|
+| event_date      | date   | the DR event day                        |
+| baseline_method | text   | e.g. "10-in-10", "High 5-of-10"         |
+| hour_ct         | timestamptz | hour, Central time                 |
+| baseline_kw     | numeric | modeled counterfactual load            |
+| actual_kw       | numeric | metered load                           |
+| is_event_hour   | bool   | optional; true during the called window |
+
+If your baseline table uses different names, remap in the `BaselineRow`
+interface and the RPC call rather than touching the components. Starter SQL
+(adapt table/column names to your schema):
+
+```sql
+create or replace function get_baseline_results(
+  p_meter_number text, p_start_date date, p_end_date date
+)
+returns table (
+  event_date date, baseline_method text, hour_ct timestamptz,
+  baseline_kw numeric, actual_kw numeric, is_event_hour boolean
+)
+language sql stable security invoker as $$
+  select b.event_date, b.method, b.hour_ct,
+         b.baseline_kw, a.actual_kw,
+         b.hour_ct >= b.event_start and b.hour_ct < b.event_end as is_event_hour
+  from baseline_results b
+  join hourly_rollups a
+    on a.meter_number = b.meter_number and a.hour_ct = b.hour_ct
+  where b.meter_number = p_meter_number
+    and b.event_date between p_start_date and p_end_date
+  order by b.event_date, b.hour_ct;
+$$;
+```
+
+Until this RPC exists the baseline page shows a friendly "not found" notice
+rather than an error — the rest of the app works without it.
+
+## Local development
 
 ```bash
-pip install -r requirements.txt
+cp .env.local.example .env.local     # fill in your anon key
+npm install
+npm run dev                          # http://localhost:3000
 ```
 
-### 2. Set up the database
+`npm run build` produces the static `out/` directory. `npm run typecheck` runs
+`tsc --noEmit`.
 
-Run the schema and seed files in order in the **Supabase SQL Editor** (Dashboard → SQL Editor → New Query):
+## Deploy to Cloudflare Pages
 
-```
-1. sql/01_schema.sql          — tables, indexes, constraints, RLS policies
-2. sql/02_seed_holidays.sql   — federal holidays 2024-2028
-3. sql/03_seed_methodology.sql — Concerto 10-of-10 baseline config
-4. sql/04_seed_reference.sql  — customers, sites, meters from meter map
-```
+**Option A — connect the Git repo (simplest).** In the Cloudflare dashboard:
+Workers & Pages → Create → Pages → connect `Entergy-DR_Data-platform`. Build
+settings:
 
-### 3. Configure your environment
+- Framework preset: **Next.js (Static HTML Export)**
+- Build command: `npm run build`
+- Build output directory: `out`
+- Environment variables: `NEXT_PUBLIC_SUPABASE_URL`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-```bash
-cp .env.example .env
-# Edit .env with your Supabase connection details
-```
+Every push to `main` redeploys; PRs get preview URLs.
 
-### 4. Ingest meter data
+**Option B — GitHub Actions.** `.github/workflows/deploy.yml` is included. Add
+repo secrets: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`,
+`CLOUDFLARE_API_TOKEN` (Pages: Edit permission), `CLOUDFLARE_ACCOUNT_ID`. Create
+a Pages project named `entergy-dr-platform` once (or via `wrangler pages project
+create`), then pushes deploy through the workflow.
 
-```bash
-# Dry run (validate only, no DB writes)
-python scripts/ingest_ami.py --file /path/to/DECRYPTED_DRPilot_AMIReads_20260701.csv --dry-run
+### After deploy
 
-# Live ingest
-python scripts/ingest_ami.py --file /path/to/file.csv
+- Add your `*.pages.dev` domain (and any custom domain) to **Supabase → Auth →
+  URL Configuration** redirect allow-list.
+- Confirm auth email templates / password setup for your 29 customers.
+- `public/_headers` ships a CSP scoped to your Supabase host — update it if you
+  change projects, and re-test hydration if you tighten `script-src`.
 
-# Batch ingest from zip
-python scripts/ingest_ami.py --zip /path/to/meterdata.zip
-
-# Batch ingest from directory
-python scripts/ingest_ami.py --dir /path/to/csv_folder/
-```
-
-### 5. Regenerate reference data from meter map
-
-If the meter map Excel is updated:
-
-```bash
-python scripts/seed_meter_map.py /path/to/ENO_MeterMap.xlsx > sql/04_seed_reference.sql
-```
-
-Then run the output SQL in the Supabase SQL Editor.
-
-## Project Structure
+## Structure
 
 ```
-dr-platform/
-├── README.md
-├── requirements.txt
-├── .env.example
-├── .gitignore
-├── scripts/
-│   ├── ingest_ami.py          # AMI CSV ingest pipeline
-│   ├── seed_meter_map.py      # Generate reference data SQL from meter map
-│   └── config.py              # Shared configuration and DB connection
-├── sql/
-│   ├── 01_schema.sql          # Full database schema
-│   ├── 02_seed_holidays.sql   # Federal holidays
-│   ├── 03_seed_methodology.sql # Baseline methodology configs
-│   └── 04_seed_reference.sql  # Customers, sites, meters (generated)
-├── docs/
-│   ├── architecture.md        # Architecture and design decisions
-│   └── decisions.md           # Decision log from discovery
-└── tests/
-    └── test_ingest.py         # Ingest pipeline tests
+src/
+  lib/
+    supabase.ts     browser client
+    rpc.ts          typed RPC wrappers  ← baseline schema assumption
+    auth.tsx        AuthProvider + useAuth  ← role assumption
+    dayClassify.ts  weekday/weekend/holiday
+    weather.ts      overlay config + aggregation
+    patterns.ts     weekend/holiday bar fills
+    csv.ts          export helper
+  components/       DailyChart, HourlyChart, BaselineChart, WeatherToggle, StatCards
+  app/
+    login/          sign-in
+    dashboard/      guarded shell + load viewer + baselines/
 ```
-
-## Key Design Decisions
-
-| Decision | Choice |
-|---|---|
-| Stable site identifier | `DeviceLocation` (not `PremiseId`) |
-| Interval convention | End-of-interval (timestamp = end of 5-min window) |
-| Hourly rollup | Hour 14:00 = intervals ending 14:05 through 15:00 |
-| Time storage | UTC internally, display in America/Chicago |
-| Units | Store kWh raw, compute kW (× 12 for 5-min), baselines in kW |
-| Net vs gross | Per-methodology config |
-| Restatements | Always accepted via UPSERT (latest ModifiedTimestamp wins) |
-| Outlier detection | Flag but don't reject (3× rolling avg threshold) |
-| Shutdown days | Dual baseline: per-spec (included) and shutdown-excluded |
-
-## Meter Types
-
-| Type | Prefix | Data Source |
-|---|---|---|
-| AMI | `AM` | Nightly SFTP from Entergy |
-| Pulse/KYZ | `EM`, numeric | Backfill request from Entergy |
-| Non-AMI | `EM` (tagged) | Backfill request with Recorder ID |
-
-## License
-
-Proprietary — internal use only.
