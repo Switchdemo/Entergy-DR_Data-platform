@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       event_id:
-        description: 'Event UUID (find in Supabase: SELECT id, event_name, event_date FROM dr_events)'
+        description: 'Event UUID'
         required: false
         type: string
       all_events:
@@ -12,10 +12,6 @@ on:
         required: false
         type: boolean
         default: false
-      methodology:
-        description: 'Methodology name (leave blank for default)'
-        required: false
-        type: string
       dry_run:
         description: 'Dry run (show calculations without saving)'
         required: false
@@ -51,9 +47,6 @@ jobs:
           else
             echo "ERROR: Specify an event_id or check all_events"
             exit 1
-          fi
-          if [ -n "${{ inputs.methodology }}" ]; then
-            ARGS="$ARGS --methodology \"${{ inputs.methodology }}\""
           fi
           if [ "${{ inputs.dry_run }}" = "true" ]; then
             ARGS="$ARGS --dry-run"
