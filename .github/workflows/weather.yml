@@ -1,1 +1,58 @@
+name: Ingest Weather Data
 
+on:
+  workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start date (YYYY-MM-DD)'
+        required: false
+        type: string
+      end_date:
+        description: 'End date (YYYY-MM-DD)'
+        required: false
+        type: string
+      days:
+        description: 'OR fetch last N days (e.g., 30, 365)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (fetch and display without saving)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  weather:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch weather data
+        run: |
+          ARGS=""
+          if [ -n "${{ inputs.start_date }}" ] && [ -n "${{ inputs.end_date }}" ]; then
+            ARGS="--start ${{ inputs.start_date }} --end ${{ inputs.end_date }}"
+          elif [ -n "${{ inputs.days }}" ]; then
+            ARGS="--days ${{ inputs.days }}"
+          else
+            echo "ERROR: Specify start_date/end_date or days"
+            exit 1
+          fi
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            ARGS="$ARGS --dry-run"
+          fi
+          echo "Running: python -u scripts/ingest_weather.py $ARGS"
+          eval python -u scripts/ingest_weather.py $ARGS
