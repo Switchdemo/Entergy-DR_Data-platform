@@ -49,6 +49,21 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Check Pelican credentials
+        run: |
+          if [ -z "$PELICAN_USERNAME" ]; then
+            echo "ERROR: PELICAN_USERNAME is empty"
+          else
+            echo "PELICAN_USERNAME is set (${#PELICAN_USERNAME} chars)"
+          fi
+          if [ -z "$PELICAN_PASSWORD" ]; then
+            echo "ERROR: PELICAN_PASSWORD is empty"
+          else
+            echo "PELICAN_PASSWORD is set (${#PELICAN_PASSWORD} chars)"
+          fi
+          echo "Testing MySites connectivity..."
+          curl -s -o /dev/null -w "HTTP status: %{http_code}" "https://mysites.officeclimatecontrol.net/api.cgi?username=${PELICAN_USERNAME}&password=${PELICAN_PASSWORD}&request=get&object=Sites&value=name;domain"
+      
       - name: Run Pelican script
         run: |
           if [ "${{ inputs.mode }}" = "discover" ]; then
