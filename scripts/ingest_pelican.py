@@ -1,4 +1,4 @@
-"""
+""" 
 ingest_pelican.py
 -----------------
 Fetches interval data from Pelican PowerLink devices via the OpenAPI
