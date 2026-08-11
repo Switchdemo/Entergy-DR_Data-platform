@@ -52,4 +52,4 @@ jobs:
             ARGS="$ARGS --dry-run"
           fi
           echo "Running: python scripts/baseline_engine.py $ARGS"
-          eval python scripts/baseline_engine.py $ARGS
+          eval python -u scripts/baseline_engine.py $ARGS
