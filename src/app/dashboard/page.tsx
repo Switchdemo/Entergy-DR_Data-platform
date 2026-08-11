@@ -7,10 +7,12 @@ import {
   getHourlyProfile,
   getWeatherHourly,
   getHolidays,
+  getBaselineResults,
   type SiteOverview,
   type DailyRow,
   type HourlyRow,
   type WeatherRow,
+  type BaselineRow,
 } from "@/lib/rpc";
 import { classifyDay, holidaySet } from "@/lib/dayClassify";
 import { wxByDate, wxByHour, type WeatherSelection } from "@/lib/weather";
@@ -22,6 +24,8 @@ import { StatCards, DayLegend, type Stat } from "@/components/StatCards";
 
 type View = "daily" | "hourly";
 type Status = { text: string; kind: "ok" | "err" | "loading" };
+
+const ALL_METHODS = ["10 of 10", "High 5 of 10", "High 3 of 10"] as const;
 
 export default function DashboardPage() {
   const [sites, setSites] = useState<SiteOverview[]>([]);
@@ -37,6 +41,13 @@ export default function DashboardPage() {
   const [hourlyData, setHourlyData] = useState<HourlyRow[]>([]);
   const [weatherData, setWeatherData] = useState<WeatherRow[]>([]);
   const [holidayDates, setHolidayDates] = useState<Set<string>>(new Set());
+
+  // Baseline state
+  const [baselineData, setBaselineData] = useState<BaselineRow[]>([]);
+  const [enabledMethods, setEnabledMethods] = useState<Set<string>>(
+    new Set(ALL_METHODS)
+  );
+  const [showBaselines, setShowBaselines] = useState(true);
 
   const [status, setStatus] = useState<Status>({ text: "Connecting…", kind: "loading" });
   const [error, setError] = useState<string | null>(null);
@@ -66,6 +77,7 @@ export default function DashboardPage() {
     if (!meter) return;
     setView("daily");
     setSelectedDay(null);
+    setBaselineData([]);
     setStatus({ text: "Loading…", kind: "loading" });
     setError(null);
     try {
@@ -98,13 +110,16 @@ export default function DashboardPage() {
       setStatus({ text: "Loading hourly…", kind: "loading" });
       setError(null);
       try {
-        const [hourly, weather] = await Promise.all([
+        const [hourly, weather, baselines] = await Promise.all([
           getHourlyProfile(meter, day, "del"),
           getWeatherHourly(day, day),
+          getBaselineResults(meter, day, day).catch(() => [] as BaselineRow[]),
         ]);
         setHourlyData(hourly);
         setWeatherData(weather);
-        setStatus({ text: `${hourly.length} hours loaded`, kind: "ok" });
+        setBaselineData(baselines);
+        const blLabel = baselines.length > 0 ? " + baselines" : "";
+        setStatus({ text: `${hourly.length} hours loaded${blLabel}`, kind: "ok" });
       } catch (e: any) {
         setStatus({ text: "Failed", kind: "err" });
         setError(e.message);
@@ -114,6 +129,19 @@ export default function DashboardPage() {
   );
 
   const backToDaily = () => loadDaily();
+
+  // ---- Method toggle ----
+  const toggleMethod = (m: string) => {
+    setEnabledMethods((prev) => {
+      const next = new Set(prev);
+      if (next.has(m)) {
+        if (next.size > 1) next.delete(m);
+      } else {
+        next.add(m);
+      }
+      return next;
+    });
+  };
 
   // ---- Daily stats ----
   const dailyStats: Stat[] = useMemo(() => {
@@ -136,6 +164,26 @@ export default function DashboardPage() {
     ];
   }, [dailyData, weatherData]);
 
+  // ---- Baseline reduction stats for hourly view ----
+  const baselineStats = useMemo(() => {
+    if (!baselineData.length || !showBaselines) return [];
+    const stats: Stat[] = [];
+    for (const method of ALL_METHODS) {
+      if (!enabledMethods.has(method)) continue;
+      const mRows = baselineData.filter((r) => r.baseline_method === method);
+      if (!mRows.length) continue;
+      const reductions = mRows.map((r) => Number(r.baseline_kw) - Number(r.actual_kw));
+      const avg = reductions.reduce((a, v) => a + v, 0) / reductions.length;
+      const color = method === "10 of 10" ? "#a1a1aa" : method === "High 5 of 10" ? "#f97316" : "#ef4444";
+      stats.push({
+        label: method,
+        value: avg.toFixed(1) + " kW",
+        color,
+      });
+    }
+    return stats;
+  }, [baselineData, enabledMethods, showBaselines]);
+
   // ---- CSV export ----
   const exportCsv = () => {
     if (view === "daily" && dailyData.length) {
@@ -155,14 +203,26 @@ export default function DashboardPage() {
       );
     } else if (view === "hourly" && hourlyData.length && selectedDay) {
       const dw = wxByHour(weatherData, selectedDay);
+      // Build baseline lookup: hour -> { method -> kw }
+      const blByHour: Record<number, Record<string, number>> = {};
+      for (const r of baselineData) {
+        const h = new Date(r.hour_ct).getHours();
+        (blByHour[h] ??= {})[r.baseline_method] = Number(r.baseline_kw);
+      }
       downloadCsv(
         `hourly_${meter}_${selectedDay}.csv`,
-        ["Hour", "Avg kW", "Intervals", "Gaps", "Temp F", "Heat Index F", "Humidity %", "Dew Point F", "Wind mph"],
+        ["Hour", "Avg kW", "Intervals", "Gaps",
+         "BL 10of10 kW", "BL Hi5of10 kW", "BL Hi3of10 kW",
+         "Temp F", "Heat Index F", "Humidity %", "Dew Point F", "Wind mph"],
         hourlyData.map((d) => {
           const h = new Date(d.hour_ct).getHours();
           const w = dw[h] ?? ({} as any);
+          const bl = blByHour[h] ?? {};
           return [
             d.hour_ct, d.avg_kw, d.interval_count, String(d.has_gaps),
+            bl["10 of 10"]?.toFixed(2) ?? "",
+            bl["High 5 of 10"]?.toFixed(2) ?? "",
+            bl["High 3 of 10"]?.toFixed(2) ?? "",
             w.temperature_f ?? "", w.heat_index_f ?? "", w.humidity_pct ?? "", w.dew_point_f ?? "", w.wind_speed_mph ?? "",
           ];
         })
@@ -215,7 +275,46 @@ export default function DashboardPage() {
 
       <WeatherToggle value={selWx} onChange={setSelWx} />
 
+      {/* Baseline toggles — only shown in hourly view when baseline data exists */}
+      {view === "hourly" && baselineData.length > 0 && (
+        <div className="weather-controls">
+          <span className="weather-label">Baselines:</span>
+          <button
+            className={`weather-btn ${showBaselines ? "active" : ""}`}
+            onClick={() => setShowBaselines((p) => !p)}
+            style={showBaselines ? { borderColor: "#22c55e", color: "#22c55e", background: "#0a2615" } : {}}
+          >
+            {showBaselines ? "On" : "Off"}
+          </button>
+          {showBaselines &&
+            ALL_METHODS.map((m) => (
+              <button
+                key={m}
+                className={`weather-btn ${enabledMethods.has(m) ? "active" : ""}`}
+                onClick={() => toggleMethod(m)}
+              >
+                {m}
+              </button>
+            ))}
+        </div>
+      )}
+
       {view === "daily" && <StatCards stats={dailyStats} />}
+      {view === "hourly" && baselineStats.length > 0 && (
+        <div className="stats">
+          {baselineStats.map((s) => (
+            <div className="stat-card" key={s.label}>
+              <div className="stat-label">{s.label}</div>
+              <div className="stat-value" style={{ color: s.color, fontSize: 18 }}>
+                {s.value}
+              </div>
+              <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 2 }}>
+                avg reduction
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="chart-card">
         <div className="chart-title">{view === "daily" ? dailyTitle : hourlyTitle}</div>
@@ -239,6 +338,8 @@ export default function DashboardPage() {
                 weatherData={weatherData}
                 selectedDay={selectedDay}
                 selWx={selWx}
+                baselineData={showBaselines ? baselineData : []}
+                enabledMethods={showBaselines ? enabledMethods : new Set()}
               />
             )
           )}
