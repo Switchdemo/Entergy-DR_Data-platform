@@ -1,1 +1,71 @@
+name: Pelican PowerLink
 
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Mode: discover (list devices) or ingest (pull data)'
+        required: true
+        type: choice
+        options:
+          - discover
+          - ingest
+      start_date:
+        description: 'Start date for ingest (YYYY-MM-DD)'
+        required: false
+        type: string
+      end_date:
+        description: 'End date for ingest (YYYY-MM-DD)'
+        required: false
+        type: string
+      days:
+        description: 'OR fetch last N days'
+        required: false
+        type: string
+      dry_run:
+        description: 'Dry run (fetch without saving)'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  pelican:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      PELICAN_USERNAME: ${{ secrets.PELICAN_USERNAME }}
+      PELICAN_PASSWORD: ${{ secrets.PELICAN_PASSWORD }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Pelican script
+        run: |
+          if [ "${{ inputs.mode }}" = "discover" ]; then
+            python -u scripts/ingest_pelican.py --discover
+          else
+            ARGS="--ingest"
+            if [ -n "${{ inputs.start_date }}" ] && [ -n "${{ inputs.end_date }}" ]; then
+              ARGS="$ARGS --start ${{ inputs.start_date }} --end ${{ inputs.end_date }}"
+            elif [ -n "${{ inputs.days }}" ]; then
+              ARGS="$ARGS --days ${{ inputs.days }}"
+            else
+              echo "ERROR: Specify start/end dates or days for ingest mode"
+              exit 1
+            fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then
+              ARGS="$ARGS --dry-run"
+            fi
+            echo "Running: python -u scripts/ingest_pelican.py $ARGS"
+            eval python -u scripts/ingest_pelican.py $ARGS
+          fi
